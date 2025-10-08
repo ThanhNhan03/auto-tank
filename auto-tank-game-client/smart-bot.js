@@ -1,345 +1,282 @@
-const { io } = require('socket.io-client')
+// =====================================================
+// 🤖 SMART BOT PRO - ADVANCED INTELLIGENT AI
+// =====================================================
+const { io } = require("socket.io-client");
+const SERVER_URL = "http://localhost:8080";
+const socket = io(SERVER_URL);
 
-console.log('🧠 Smart Bot Client - Advanced AI!')
-console.log('===================================')
+console.log("🧠 SMART BOT PRO Initialized");
+console.log("===================================");
 
-// Kết nối với server
-const socket = io('http://localhost:8080')
+let botPlayer = null;
+let latestGameState = null;
 
-// Bot state
-let botPlayer = null
-let gameMap = null
-let allPlayers = []
-let mapWidth = 0
-let mapHeight = 0
-let isGameStarted = false
-let movementInterval = null
-let exploredCells = new Set()
-let currentTarget = null
-let stuckCounter = 0
-let lastPosition = null
+const botMemory = {
+  explored: new Set(),
+  lastPos: null,
+  stuckCounter: 0,
+  target: null,
+  safeMode: false,
+};
 
-// Direction constants
-const DIRECTIONS = {
-  UP: 0,
-  RIGHT: 1,
-  DOWN: 2,
-  LEFT: 3
+const DIR = { UP: 0, RIGHT: 1, DOWN: 2, LEFT: 3 };
+const DIR_NAMES = ["UP", "RIGHT", "DOWN", "LEFT"];
+
+// =====================================================
+// 🎯 SMART BOT AI CORE
+// =====================================================
+function smartBotAI(player, game) {
+  if (!player || !game || !game.map) return { type: "idle" };
+
+  const { x, y, direction } = player;
+  const map = game.map;
+
+  botMemory.explored.add(`${x},${y}`);
+  checkIfStuck(x, y);
+
+  // --- 1️⃣ Bullet avoidance (threat prediction)
+  const dodge = avoidBullets(player, game.bullets, map);
+  if (dodge) return dodge;
+
+  // --- 2️⃣ Engage enemy if visible
+  const enemy = getClosestEnemy(player, game.players);
+  if (enemy && canSeeEnemy(player, enemy, map)) {
+    return aimAndShoot(player, enemy);
+  }
+
+  // --- 3️⃣ Explore map with A* pathfinding
+  if (!botMemory.target || reachedTarget(player, botMemory.target)) {
+    botMemory.target = getNewTarget(map);
+  }
+
+  const path = findPathAStar(map, { x, y }, botMemory.target);
+  if (path && path.length > 1) {
+    const nextStep = path[1];
+    const newDir = getDirectionTo(x, y, nextStep.x, nextStep.y);
+    if (newDir !== direction) return { type: "rotate", direction: newDir };
+    return { type: "move", direction: newDir };
+  }
+
+  // --- 4️⃣ Random move fallback
+  return { type: "move", direction: Math.floor(Math.random() * 4) };
 }
 
-const DIRECTION_NAMES = ['UP', 'RIGHT', 'DOWN', 'LEFT']
-const DIRECTION_SYMBOLS = ['↑', '→', '↓', '←']
-
-socket.on('connect', () => {
-  console.log('🧠 Smart Bot connected! Socket ID:', socket.id)
-  console.log('🎮 Sending join request...')
-  
-  const botName = `SmartBot_${socket.id.substring(0, 4)}`
-  socket.emit('join_game', { playerName: botName })
-})
-
-socket.on('joined_game', (data) => {
-  console.log('🎮 Smart Bot joined game successfully!')
-  console.log('🏠 Room:', data.roomId)
-  console.log('👤 Player Name:', data.playerData.name)
-  console.log('🎨 Color:', data.playerData.color)
-  console.log('📍 Starting Position:', `(${data.playerData.x}, ${data.playerData.y})`)
-  console.log('🗺️  Map Size:', `${data.gameState.map[0].length}x${data.gameState.map.length}`)
-  console.log('')
-  
-  botPlayer = data.playerData
-  gameMap = data.gameState.map
-  mapWidth = data.gameState.map[0].length
-  mapHeight = data.gameState.map.length
-  lastPosition = { x: botPlayer.x, y: botPlayer.y }
-  
-  console.log('🧠 Smart Bot initialized with advanced pathfinding!')
-  console.log('⏳ Waiting for game to start...')
-})
-
-socket.on('join_error', (data) => {
-  console.error('❌ Smart Bot failed to join:', data.message)
-})
-
-socket.on('game_started', (data) => {
-  console.log('🚀 GAME STARTED! Smart Bot activating AI systems...')
-  isGameStarted = true
-  
-  startSmartMovement()
-})
-
-socket.on('game_state', (gameState) => {
-  // Cập nhật state từ server
-  if (gameState.players && botPlayer) {
-    const serverPlayer = gameState.players.find(p => p.id === socket.id)
-    if (serverPlayer) {
-      // Kiểm tra xem bot có bị stuck không
-      if (lastPosition && lastPosition.x === serverPlayer.x && lastPosition.y === serverPlayer.y) {
-        stuckCounter++
-      } else {
-        stuckCounter = 0
-        lastPosition = { x: serverPlayer.x, y: serverPlayer.y }
-      }
-      
-      botPlayer = serverPlayer
-      
-      // Đánh dấu ô đã explore
-      const cellKey = `${botPlayer.x},${botPlayer.y}`
-      if (!exploredCells.has(cellKey)) {
-        exploredCells.add(cellKey)
-        console.log(`🗺️  Explored: (${botPlayer.x}, ${botPlayer.y}) - Total: ${exploredCells.size} cells`)
-      }
-    }
-    
-    allPlayers = gameState.players
-  }
-})
-
-socket.on('player_joined', (data) => {
-  console.log(`👋 New player joined: ${data.player.name}`)
-})
-
-socket.on('connection_error', (error) => {
-  console.log('❌ Connection failed:', error.message)
-  process.exit(1)
-})
-
-socket.on('disconnect', () => {
-  console.log('❌ Smart Bot disconnected')
-  process.exit(0)
-})
-
-// ============================================
-// SMART MOVEMENT LOGIC
-// ============================================
-
-function startSmartMovement() {
-  console.log('🧠 Starting advanced AI movement system...')
-  console.log('📊 Features: Pathfinding, Exploration, Obstacle Avoidance')
-  console.log('')
-  
-  // Di chuyển mỗi 400ms (faster than simple bot)
-  movementInterval = setInterval(() => {
-    if (botPlayer && gameMap && isGameStarted && botPlayer.isAlive) {
-      makeSmartMove()
-    }
-  }, 400)
-}
-
-function makeSmartMove() {
-  const currentX = botPlayer.x
-  const currentY = botPlayer.y
-  const currentDirection = botPlayer.direction
-  
-  // Nếu bị stuck quá lâu, random direction mới
-  if (stuckCounter > 5) {
-    console.log('🔄 Bot seems stuck, trying random direction...')
-    currentTarget = null
-    stuckCounter = 0
-  }
-  
-  // Nếu không có target hoặc đã đến target, tìm target mới
-  if (!currentTarget || (currentX === currentTarget.x && currentY === currentTarget.y)) {
-    currentTarget = findNextExplorationTarget(currentX, currentY)
-    if (currentTarget) {
-      console.log(`🎯 New target: (${currentTarget.x}, ${currentTarget.y})`)
-    }
-  }
-  
-  // Tìm hướng di chuyển tốt nhất
-  let bestDirection
-  
-  if (currentTarget) {
-    // Sử dụng pathfinding để đi đến target
-    bestDirection = findDirectionToTarget(currentX, currentY, currentTarget, currentDirection)
-  } else {
-    // Không có target, explore ngẫu nhiên
-    bestDirection = findBestExplorationDirection(currentX, currentY, currentDirection)
-  }
-  
-  if (bestDirection !== null) {
-    // Xoay nếu cần
-    if (bestDirection !== currentDirection) {
-      botPlayer.direction = bestDirection
-      const symbol = DIRECTION_SYMBOLS[bestDirection]
-      console.log(`${symbol} Rotating to ${DIRECTION_NAMES[bestDirection]}`)
-      
-      socket.emit('player_action', {
-        type: 'rotate',
-        direction: bestDirection
-      })
-      return
-    }
-    
-    // Di chuyển
-    const nextPos = getNextPosition(currentX, currentY, currentDirection)
-    
-    if (canMoveTo(nextPos.x, nextPos.y)) {
-      const symbol = DIRECTION_SYMBOLS[currentDirection]
-      console.log(`${symbol} Moving to (${nextPos.x}, ${nextPos.y})`)
-      
-      botPlayer.x = nextPos.x
-      botPlayer.y = nextPos.y
-      
-      socket.emit('player_action', {
-        type: 'move',
-        direction: currentDirection
-      })
-    } else {
-      console.log(`🚫 Path blocked, recalculating...`)
-      currentTarget = null
+// =====================================================
+// 🧩 SUPPORT FUNCTIONS
+// =====================================================
+function checkIfStuck(x, y) {
+  if (!botMemory.lastPos) botMemory.lastPos = { x, y };
+  if (x === botMemory.lastPos.x && y === botMemory.lastPos.y) {
+    botMemory.stuckCounter++;
+    if (botMemory.stuckCounter > 2) {
+      botMemory.target = null;
+      botMemory.stuckCounter = 0;
+      console.log("⚠️ Bot unstuck triggered");
     }
   } else {
-    console.log('🤔 No valid direction found, staying put...')
+    botMemory.lastPos = { x, y };
+    botMemory.stuckCounter = 0;
   }
 }
 
-function findNextExplorationTarget(x, y) {
-  // Tìm ô chưa explore gần nhất
-  let minDistance = Infinity
-  let bestTarget = null
-  
-  // Scan vùng lân cận (radius 5)
-  const radius = 5
-  
-  for (let dy = -radius; dy <= radius; dy++) {
-    for (let dx = -radius; dx <= radius; dx++) {
-      const targetX = x + dx
-      const targetY = y + dy
-      
-      if (canMoveTo(targetX, targetY)) {
-        const cellKey = `${targetX},${targetY}`
-        
-        if (!exploredCells.has(cellKey)) {
-          const distance = Math.abs(dx) + Math.abs(dy)
-          if (distance < minDistance) {
-            minDistance = distance
-            bestTarget = { x: targetX, y: targetY }
-          }
-        }
-      }
+function avoidBullets(player, bullets, map) {
+  for (const b of bullets || []) {
+    if (b.ownerId === player.id) continue;
+    const dangerDist = 3;
+    const { x, y } = player;
+    switch (b.direction) {
+      case DIR.UP:
+        if (b.x === x && b.y > y && b.y - y <= dangerDist)
+          return trySidestep(player, map, [DIR.LEFT, DIR.RIGHT]);
+        break;
+      case DIR.DOWN:
+        if (b.x === x && y > b.y && y - b.y <= dangerDist)
+          return trySidestep(player, map, [DIR.LEFT, DIR.RIGHT]);
+        break;
+      case DIR.LEFT:
+        if (b.y === y && b.x > x && b.x - x <= dangerDist)
+          return trySidestep(player, map, [DIR.UP, DIR.DOWN]);
+        break;
+      case DIR.RIGHT:
+        if (b.y === y && x > b.x && x - b.x <= dangerDist)
+          return trySidestep(player, map, [DIR.UP, DIR.DOWN]);
+        break;
     }
   }
-  
-  // Nếu không tìm thấy ô chưa explore gần, chọn random
-  if (!bestTarget) {
-    bestTarget = findRandomValidCell()
-  }
-  
-  return bestTarget
+  return null;
 }
 
-function findRandomValidCell() {
-  for (let i = 0; i < 20; i++) {
-    const x = Math.floor(Math.random() * mapWidth)
-    const y = Math.floor(Math.random() * mapHeight)
-    
-    if (canMoveTo(x, y)) {
-      return { x, y }
+function trySidestep(player, map, dirs) {
+  for (const d of dirs) {
+    const next = getNextPos(player.x, player.y, d);
+    if (canMove(next.x, next.y, map))
+      return player.direction === d
+        ? { type: "move", direction: d }
+        : { type: "rotate", direction: d };
+  }
+  return null;
+}
+
+function getClosestEnemy(me, players) {
+  let nearest = null;
+  let minDist = Infinity;
+  for (const p of players) {
+    if (p.id === me.id || !p.isAlive) continue;
+    const d = Math.abs(p.x - me.x) + Math.abs(p.y - me.y);
+    if (d < minDist) {
+      minDist = d;
+      nearest = p;
     }
   }
-  return null
+  return nearest;
 }
 
-function findDirectionToTarget(x, y, target, currentDirection) {
-  // Simple greedy approach - di chuyển về phía target
-  const dx = target.x - x
-  const dy = target.y - y
-  
-  // Ưu tiên axis có khoảng cách lớn hơn
-  const priorities = []
-  
-  if (Math.abs(dy) >= Math.abs(dx)) {
-    if (dy < 0) priorities.push(DIRECTIONS.UP)
-    if (dy > 0) priorities.push(DIRECTIONS.DOWN)
-    if (dx > 0) priorities.push(DIRECTIONS.RIGHT)
-    if (dx < 0) priorities.push(DIRECTIONS.LEFT)
-  } else {
-    if (dx > 0) priorities.push(DIRECTIONS.RIGHT)
-    if (dx < 0) priorities.push(DIRECTIONS.LEFT)
-    if (dy < 0) priorities.push(DIRECTIONS.UP)
-    if (dy > 0) priorities.push(DIRECTIONS.DOWN)
+function canSeeEnemy(me, enemy, map) {
+  if (me.x === enemy.x) {
+    const [minY, maxY] = [Math.min(me.y, enemy.y), Math.max(me.y, enemy.y)];
+    for (let y = minY + 1; y < maxY; y++) if (map[y][me.x] === 1) return false;
+    return true;
   }
-  
-  // Thử các direction theo thứ tự ưu tiên
-  for (const dir of priorities) {
-    const nextPos = getNextPosition(x, y, dir)
-    if (canMoveTo(nextPos.x, nextPos.y)) {
-      return dir
-    }
+  if (me.y === enemy.y) {
+    const [minX, maxX] = [Math.min(me.x, enemy.x), Math.max(me.x, enemy.x)];
+    for (let x = minX + 1; x < maxX; x++) if (map[me.y][x] === 1) return false;
+    return true;
   }
-  
-  // Không có direction nào đi được về phía target, tìm bất kỳ direction nào
-  return findBestExplorationDirection(x, y, currentDirection)
+  return false;
 }
 
-function findBestExplorationDirection(x, y, currentDirection) {
-  // Ưu tiên: tiếp tục đi thẳng
-  const straight = getNextPosition(x, y, currentDirection)
-  if (canMoveTo(straight.x, straight.y)) {
-    return currentDirection
-  }
-  
-  // Thử các hướng khác
-  const directions = [
-    (currentDirection + 3) % 4, // Trái
-    (currentDirection + 1) % 4, // Phải
-    (currentDirection + 2) % 4  // Quay lại
-  ]
-  
-  for (const dir of directions) {
-    const nextPos = getNextPosition(x, y, dir)
-    if (canMoveTo(nextPos.x, nextPos.y)) {
-      return dir
-    }
-  }
-  
-  return null
+function aimAndShoot(me, target) {
+  const dx = target.x - me.x;
+  const dy = target.y - me.y;
+  let dir;
+  if (Math.abs(dx) > Math.abs(dy))
+    dir = dx > 0 ? DIR.RIGHT : DIR.LEFT;
+  else dir = dy > 0 ? DIR.DOWN : DIR.UP;
+
+  return dir === me.direction
+    ? { type: "shoot" }
+    : { type: "rotate", direction: dir };
 }
 
-function getNextPosition(x, y, direction) {
-  switch (direction) {
-    case DIRECTIONS.UP:
-      return { x, y: y - 1 }
-    case DIRECTIONS.RIGHT:
-      return { x: x + 1, y }
-    case DIRECTIONS.DOWN:
-      return { x, y: y + 1 }
-    case DIRECTIONS.LEFT:
-      return { x: x - 1, y }
+function reachedTarget(player, target) {
+  return target && player.x === target.x && player.y === target.y;
+}
+
+function getNewTarget(map) {
+  for (let i = 0; i < 100; i++) {
+    const x = Math.floor(Math.random() * map[0].length);
+    const y = Math.floor(Math.random() * map.length);
+    if (canMove(x, y, map)) return { x, y };
+  }
+  return { x: 1, y: 1 };
+}
+
+function canMove(x, y, map) {
+  return (
+    map &&
+    y >= 0 &&
+    y < map.length &&
+    x >= 0 &&
+    x < map[0].length &&
+    map[y][x] === 0
+  );
+}
+
+function getNextPos(x, y, dir) {
+  switch (dir) {
+    case DIR.UP:
+      return { x, y: y - 1 };
+    case DIR.RIGHT:
+      return { x: x + 1, y };
+    case DIR.DOWN:
+      return { x, y: y + 1 };
+    case DIR.LEFT:
+      return { x: x - 1, y };
     default:
-      return { x, y }
+      return { x, y };
   }
 }
 
-function canMoveTo(x, y) {
-  // Kiểm tra bounds
-  if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight) {
-    return false
-  }
-  
-  // Kiểm tra tường
-  if (gameMap[y][x] === 1) {
-    return false
-  }
-  
-  // Kiểm tra collision với player khác (optional)
-  // TODO: implement later if needed
-  
-  return true
+function getDirectionTo(x1, y1, x2, y2) {
+  if (x2 > x1) return DIR.RIGHT;
+  if (x2 < x1) return DIR.LEFT;
+  if (y2 > y1) return DIR.DOWN;
+  return DIR.UP;
 }
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n👋 Smart Bot shutting down...')
-  console.log(`📊 Explored ${exploredCells.size} cells before shutdown`)
-  
-  if (movementInterval) {
-    clearInterval(movementInterval)
-  }
-  socket.disconnect()
-  process.exit(0)
-})
+// =====================================================
+// 🧠 A* PATHFINDING
+// =====================================================
+function findPathAStar(map, start, goal) {
+  const open = [start];
+  const cameFrom = new Map();
+  const g = new Map();
+  const key = (x, y) => `${x},${y}`;
 
-console.log('🔌 Connecting to http://localhost:8080...')
-console.log('💡 Press Ctrl+C to exit')
+  g.set(key(start.x, start.y), 0);
+
+  while (open.length > 0) {
+    const current = open.shift();
+    if (current.x === goal.x && current.y === goal.y)
+      return reconstructPath(cameFrom, current);
+
+    for (const d of [0, 1, 2, 3]) {
+      const n = getNextPos(current.x, current.y, d);
+      if (!canMove(n.x, n.y, map)) continue;
+      const gScore = g.get(key(current.x, current.y)) + 1;
+      const nk = key(n.x, n.y);
+      if (gScore < (g.get(nk) ?? Infinity)) {
+        cameFrom.set(nk, current);
+        g.set(nk, gScore);
+        open.push(n);
+      }
+    }
+  }
+  return null;
+}
+
+function reconstructPath(cameFrom, current) {
+  const path = [current];
+  while (cameFrom.has(`${current.x},${current.y}`)) {
+    current = cameFrom.get(`${current.x},${current.y}`);
+    path.unshift(current);
+  }
+  return path;
+}
+
+// =====================================================
+// 🔗 SOCKET CONNECTIONS
+// =====================================================
+socket.on("connect", () => {
+  const botName = `SmartPro_${socket.id.slice(0, 4)}`;
+  console.log(`✅ Connected → ${botName}`);
+  socket.emit("join_game", { playerName: botName });
+});
+
+socket.on("joined_game", (data) => {
+  botPlayer = data.playerData;
+  console.log(`🎮 Joined as ${botPlayer.name} → ${data.roomId}`);
+});
+
+socket.on("game_state", (gameState) => {
+  latestGameState = gameState;
+  const me = gameState.players.find((p) => p.id === socket.id);
+  if (me) botPlayer = me;
+});
+
+setInterval(() => {
+  if (!botPlayer || !latestGameState) return;
+  const action = smartBotAI(botPlayer, latestGameState);
+  if (action && action.type !== "idle") {
+    socket.emit("player_action", { action });
+    console.log(
+      `🤖 ${action.type}${action.direction !== undefined ? ` (${DIR_NAMES[action.direction]})` : ""
+      }`
+    );
+  }
+}, 250);
+
+socket.on("disconnect", () => {
+  console.log("❌ Disconnected");
+  process.exit(0);
+});

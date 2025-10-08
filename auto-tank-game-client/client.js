@@ -15,15 +15,19 @@ let roomId = null
 socket.on('connect', () => {
   console.log('✅ Đã kết nối với server!')
   console.log('📡 Socket ID:', socket.id)
-  console.log('⏳ Đang chờ server tự động thêm vào game...')
+  console.log('🎮 Gửi yêu cầu join game...')
   console.log('')
   
-  // KHÔNG CẦN emit join_game nữa - server sẽ tự động add player
+  // Gửi yêu cầu join game với tên ngẫu nhiên
+  const randomNum = Math.floor(Math.random() * 1000)
+  const playerName = `Player_${randomNum}`
+  
+  socket.emit('join_game', { playerName: playerName })
 })
 
-// Event: Được tự động thêm vào game
-socket.on('connected_to_game', (data) => {
-  console.log('🎯 Được tự động thêm vào game!')
+// Event: Join game thành công
+socket.on('joined_game', (data) => {
+  console.log('🎯 Join game thành công!')
   console.log('💬 Message:', data.message)
   console.log('👤 Player ID:', data.playerId)
   console.log('🏠 Room ID:', data.roomId)
@@ -51,21 +55,10 @@ socket.on('connected_to_game', (data) => {
   printGameState(data.gameState)
 })
 
-// Event: Join game thành công (legacy support)
-socket.on('game_joined', (data) => {
-  console.log('🎯 Join game thành công! (Legacy mode)')
-  console.log('👤 Player ID:', data.playerId)
-  console.log('🏠 Room ID:', data.roomId)
-  console.log('📊 Player Data:', data.playerData)
+// Event: Join game error
+socket.on('join_error', (data) => {
+  console.error('❌ Lỗi khi join game:', data.message)
   console.log('')
-  
-  playerId = data.playerId
-  roomId = data.roomId
-  gameState = data.gameState
-  
-  // In ra thông tin map matrix
-  printMapMatrix(data.gameState.map)
-  printGameState(data.gameState)
 })
 
 // Event: Nhận game state updates
